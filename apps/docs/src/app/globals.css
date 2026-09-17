@@ -112,6 +112,20 @@
   #nd-page > [data-mobile-docs-bar] {
     display: flex;
   }
+
+  #nd-page [data-mobile-toc-trigger] {
+    width: 44px;
+    height: 44px;
+  }
+
+  #nd-page > div:has(> h1) {
+    padding-inline-end: 3.5rem;
+  }
+
+  #nd-page > div:has(> h1) + div,
+  #nd-page > div:has(> h1) + p + div {
+    margin-top: 0;
+  }
 }
 
 #nd-toc {

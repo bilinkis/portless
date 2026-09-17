@@ -166,31 +166,37 @@ export function DocsChat({
 
   useEffect(() => {
     const launcher = launcherRef.current;
+    if (!hasMounted || open || !launcher) return;
     const footer = document.querySelector("footer");
-    const themeControls = footer?.querySelector("fieldset");
-    if (open || !launcher || !themeControls) return;
     let frame = 0;
     const update = () => {
       frame = 0;
-      const rect = themeControls.getBoundingClientRect();
-      const overlap = rect.bottom > 0 ? Math.max(0, window.innerHeight - rect.top) : 0;
-      launcher.style.bottom = `${24 + overlap}px`;
+      const rect = document.querySelector("footer fieldset")?.getBoundingClientRect();
+      const overlap =
+        rect && rect.width > 0 && rect.bottom > 0 ? Math.max(0, window.innerHeight - rect.top) : 0;
+      launcher.style.setProperty("--chat-launcher-bottom", `${24 + overlap}px`);
     };
     const schedule = () => {
       if (!frame) frame = requestAnimationFrame(update);
     };
     const resize = new ResizeObserver(schedule);
-    resize.observe(themeControls);
+    resize.observe(document.body);
+    const mutation = new MutationObserver(schedule);
+    if (footer) {
+      resize.observe(footer);
+      mutation.observe(footer, { childList: true, subtree: true });
+    }
     window.addEventListener("scroll", schedule, { passive: true });
     window.addEventListener("resize", schedule);
     update();
     return () => {
       cancelAnimationFrame(frame);
       resize.disconnect();
+      mutation.disconnect();
       window.removeEventListener("scroll", schedule);
       window.removeEventListener("resize", schedule);
     };
-  }, [open]);
+  }, [hasMounted, open]);
 
   useEffect(() => {
     const body = document.body;
@@ -505,18 +511,22 @@ export function DocsChat({
     <>
       {/* Ask AI trigger button */}
       {!open && (
-        <div ref={launcherRef} className="fixed z-30 bottom-6 right-6">
+        <div
+          ref={launcherRef}
+          data-docs-chat-launcher
+          className="fixed bottom-[calc(1rem+env(safe-area-inset-bottom))] left-1/2 z-30 -translate-x-1/2 min-[640px]:right-6 min-[640px]:bottom-[var(--chat-launcher-bottom,24px)] min-[640px]:left-auto min-[640px]:translate-x-0"
+        >
           <Button
             onClick={() => setOpen(true)}
             size="medium"
-            className="gap-2 shadow-lg"
+            className="h-10 shadow-lg min-[640px]:h-9"
             aria-label="Ask AI"
             aria-expanded={open}
             aria-controls={isDesktop ? "portless-chat-desktop" : "portless-chat-mobile"}
             aria-keyshortcuts="Meta+I Control+I"
           >
             Ask AI
-            <kbd className="hidden sm:inline-flex items-center gap-0.5 text-xs opacity-60 font-mono">
+            <kbd className="ml-2 hidden items-center gap-0.5 font-mono text-xs opacity-60 min-[640px]:inline-flex">
               <span>&#8984;</span>I
             </kbd>
           </Button>
