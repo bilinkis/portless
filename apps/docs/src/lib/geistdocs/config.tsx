@@ -7,6 +7,7 @@ export const config = defineConfig({
   defaultLanguage: "en",
   logo: <span className="font-medium">portless</span>,
   navbarActiveProduct: "portless",
+  navbarBrand: "labs",
   github: {
     owner: "vercel-labs",
     repo: "portless",
