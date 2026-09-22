@@ -281,7 +281,7 @@ async function opensslAsync(args: string[]): Promise<string> {
 function generateCA(stateDir: string): { certPath: string; keyPath: string } {
   const keyPath = path.join(stateDir, CA_KEY_FILE);
   const certPath = path.join(stateDir, CA_CERT_FILE);
-  const reqConfigPath = path.join(stateDir, "ca-req.cnf");
+  const reqConfigPath = path.join(stateDir, `ca-req-${process.pid}-${crypto.randomUUID()}.cnf`);
 
   // Generate EC private key
   openssl(["ecparam", "-genkey", "-name", "prime256v1", "-noout", "-out", keyPath]);
