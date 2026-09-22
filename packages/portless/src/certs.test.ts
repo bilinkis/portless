@@ -131,6 +131,48 @@ describe("ensureCerts", () => {
     expect(getCertSignatureAlgo(result.certPath)).toContain("sha256");
   });
 
+  it("does not duplicate critical extensions when the ambient openssl.cnf sets x509_extensions for req (regression)", () => {
+    // Regression: generateCA() ran `openssl req -x509 -addext
+    // basicConstraints=...` without an explicit `-config`. On any system
+    // whose default/OPENSSL_CONF openssl.cnf sets `x509_extensions = v3_ca`
+    // under `[ req ]` (the stock upstream template does, and several distro
+    // configs match it), that section's own `basicConstraints = critical,
+    // CA:TRUE` gets applied *in addition to* the `-addext`, producing a CA
+    // certificate with the Basic Constraints extension listed twice. That's
+    // invalid per RFC 5280 (extensions must be unique) and macOS's Security
+    // framework rejects the whole chain with "Unknown critical cert
+    // extension", regardless of trust settings, so every *.localhost site
+    // looks untrusted even after `portless trust` reports success.
+    const fakeSystemCnf = path.join(tmpDir, "fake-system-openssl.cnf");
+    fs.writeFileSync(
+      fakeSystemCnf,
+      [
+        "[req]",
+        "distinguished_name = req_distinguished_name",
+        "x509_extensions = v3_ca",
+        "prompt = no",
+        "[req_distinguished_name]",
+        "[v3_ca]",
+        "basicConstraints = critical,CA:TRUE",
+        "",
+      ].join("\n")
+    );
+
+    const prevOpensslConf = process.env.OPENSSL_CONF;
+    process.env.OPENSSL_CONF = fakeSystemCnf;
+    try {
+      const result = ensureCerts(tmpDir);
+      const caText = execFileSync("openssl", ["x509", "-in", result.caPath, "-noout", "-text"], {
+        encoding: "utf-8",
+      });
+      const basicConstraintsCount = (caText.match(/Basic Constraints/g) ?? []).length;
+      expect(basicConstraintsCount).toBe(1);
+    } finally {
+      if (prevOpensslConf === undefined) delete process.env.OPENSSL_CONF;
+      else process.env.OPENSSL_CONF = prevOpensslConf;
+    }
+  });
+
   it("generates certs when state dir path contains a dot (#152)", () => {
     // Regression: -CAcreateserial derived .srl path using the last dot in the
     // full path, so a dot in $HOME (e.g. /Users/ashish.jaiswal) caused

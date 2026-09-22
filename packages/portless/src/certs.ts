@@ -281,29 +281,61 @@ async function opensslAsync(args: string[]): Promise<string> {
 function generateCA(stateDir: string): { certPath: string; keyPath: string } {
   const keyPath = path.join(stateDir, CA_KEY_FILE);
   const certPath = path.join(stateDir, CA_CERT_FILE);
+  const reqConfigPath = path.join(stateDir, "ca-req.cnf");
 
   // Generate EC private key
   openssl(["ecparam", "-genkey", "-name", "prime256v1", "-noout", "-out", keyPath]);
 
-  // Generate self-signed CA certificate
-  openssl([
-    "req",
-    "-new",
-    "-x509",
-    "-sha256",
-    "-key",
-    keyPath,
-    "-out",
-    certPath,
-    "-days",
-    CA_VALIDITY_DAYS.toString(),
-    "-subj",
-    `/CN=${CA_COMMON_NAME}`,
-    "-addext",
-    "basicConstraints=critical,CA:TRUE",
-    "-addext",
-    "keyUsage=critical,keyCertSign,cRLSign",
-  ]);
+  // Generate self-signed CA certificate.
+  //
+  // `-config` is passed explicitly (a minimal config with no
+  // `x509_extensions` default) instead of relying on the environment's
+  // ambient openssl.cnf. Some openssl builds ship the stock upstream
+  // template, which sets `x509_extensions = v3_ca` under `[ req ]`; combined
+  // with `-addext basicConstraints=...` below that produces a certificate
+  // with the Basic Constraints extension listed twice. That's invalid per
+  // RFC 5280 (extensions must be unique) and macOS's Security framework
+  // rejects the whole chain with "Unknown critical cert extension",
+  // regardless of trust settings, so every *.localhost site looks
+  // untrusted even after `portless trust` succeeds.
+  fs.writeFileSync(
+    reqConfigPath,
+    [
+      "[req]",
+      "distinguished_name = req_distinguished_name",
+      "prompt = no",
+      "[req_distinguished_name]",
+      "",
+    ].join("\n")
+  );
+  try {
+    openssl([
+      "req",
+      "-new",
+      "-x509",
+      "-sha256",
+      "-key",
+      keyPath,
+      "-out",
+      certPath,
+      "-days",
+      CA_VALIDITY_DAYS.toString(),
+      "-config",
+      reqConfigPath,
+      "-subj",
+      `/CN=${CA_COMMON_NAME}`,
+      "-addext",
+      "basicConstraints=critical,CA:TRUE",
+      "-addext",
+      "keyUsage=critical,keyCertSign,cRLSign",
+      "-addext",
+      "subjectKeyIdentifier=hash",
+      "-addext",
+      "authorityKeyIdentifier=keyid:always",
+    ]);
+  } finally {
+    fs.rmSync(reqConfigPath, { force: true });
+  }
 
   fs.chmodSync(keyPath, 0o600);
   fs.chmodSync(certPath, 0o644);
