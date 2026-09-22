@@ -59,6 +59,8 @@ const SERVER_KEY_FILE = "server-key.pem";
 const SERVER_CERT_FILE = "server.pem";
 const CA_TRUST_MARKER = "ca.trusted";
 const CA_TRUST_REFRESH_PENDING = "ca.trust-refresh-pending";
+/** Directory within state dir where per-hostname certs are cached. */
+const HOST_CERTS_DIR = "host-certs";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -226,6 +228,33 @@ function isCertSignatureStrong(certPath: string): boolean {
 }
 
 /**
+ * Check whether a certificate lists the same X.509v3 extension more than once.
+ * RFC 5280 requires extensions to be unique, and macOS's Security framework
+ * rejects every chain through a CA that violates this ("Unknown critical cert
+ * extension") regardless of trust settings.
+ *
+ * Earlier portless releases could emit such a CA when the ambient openssl.cnf
+ * set `x509_extensions = v3_ca` for `req` (see #429). An existing CA that trips
+ * this check is regenerated so affected users recover on upgrade.
+ *
+ * Parses the `openssl x509 -text` output: inside the `X509v3 extensions:`
+ * block each extension name sits on its own line at a fixed indent, optionally
+ * followed by `critical`, while values are indented one level deeper.
+ */
+function hasDuplicateExtensions(certPath: string): boolean {
+  try {
+    const text = openssl(["x509", "-in", certPath, "-noout", "-text"]);
+    const block = text.split(/^\s*X509v3 extensions:\s*$/m)[1];
+    if (!block) return false;
+    const body = block.split(/^\s*Signature Algorithm:/m)[0];
+    const names = [...body.matchAll(/^ {12}(\S.*?):(?: critical)?\s*$/gm)].map((m) => m[1]);
+    return new Set(names).size !== names.length;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Run openssl and return stdout. Throws on non-zero exit.
  */
 function openssl(args: string[], options?: { input?: string }): string {
@@ -298,6 +327,10 @@ function generateCA(stateDir: string): { certPath: string; keyPath: string } {
   // rejects the whole chain with "Unknown critical cert extension",
   // regardless of trust settings, so every *.localhost site looks
   // untrusted even after `portless trust` succeeds.
+  //
+  // The subject lives in the config rather than in `-subj`: LibreSSL (the
+  // openssl shipped with macOS) refuses a `prompt = no` request whose
+  // distinguished_name section is empty, even when `-subj` is given.
   fs.writeFileSync(
     reqConfigPath,
     [
@@ -305,6 +338,7 @@ function generateCA(stateDir: string): { certPath: string; keyPath: string } {
       "distinguished_name = req_distinguished_name",
       "prompt = no",
       "[req_distinguished_name]",
+      `CN = ${CA_COMMON_NAME}`,
       "",
     ].join("\n")
   );
@@ -322,8 +356,6 @@ function generateCA(stateDir: string): { certPath: string; keyPath: string } {
       CA_VALIDITY_DAYS.toString(),
       "-config",
       reqConfigPath,
-      "-subj",
-      `/CN=${CA_COMMON_NAME}`,
       "-addext",
       "basicConstraints=critical,CA:TRUE",
       "-addext",
@@ -342,6 +374,11 @@ function generateCA(stateDir: string): { certPath: string; keyPath: string } {
   fixOwnership(keyPath, certPath);
 
   clearTrustMarker(stateDir);
+
+  // Per-hostname certificates issued by the previous CA no longer chain to
+  // this one, and the SNI callback serves cached certs from disk without
+  // checking their issuer, so drop them to be re-issued on demand.
+  fs.rmSync(path.join(stateDir, HOST_CERTS_DIR), { recursive: true, force: true });
 
   return { certPath, keyPath };
 }
@@ -455,7 +492,8 @@ export function ensureCerts(stateDir: string): {
     !fileExists(caCertPath) ||
     !fileExists(caKeyPath) ||
     !isCertValid(caCertPath) ||
-    !isCertSignatureStrong(caCertPath);
+    !isCertSignatureStrong(caCertPath) ||
+    hasDuplicateExtensions(caCertPath);
 
   if (caMissing) {
     generateCA(stateDir);
@@ -657,9 +695,6 @@ function isCATrustedLinux(
 // ---------------------------------------------------------------------------
 // Per-hostname certificate generation (SNI)
 // ---------------------------------------------------------------------------
-
-/** Directory within state dir where per-hostname certs are cached. */
-const HOST_CERTS_DIR = "host-certs";
 
 /**
  * Longest suffix appended to a sanitized host when composing a cert cache
